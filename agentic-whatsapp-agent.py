@@ -1,61 +1,54 @@
 import os
-import requests
-from twilio.rest import Client
-import schedule
-import time
+import json
+from flask import Flask, request
+import openai
 
-# Twilio credentials (best to set as environment variables)
-TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', 'YOUR_TWILIO_SID')
-TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', 'YOUR_TWILIO_AUTH')
-TWILIO_WHATSAPP_NUMBER = 'whatsapp:+14155238886'  # Twilio sandbox number
-RECIPIENT_NUMBER = 'whatsapp:+1234567890'         # Your WhatsApp number
+# Load persona from config
+with open('persona_config.json', 'r') as f:
+    config = json.load(f)
 
-# Weather API credentials and settings
-OPENWEATHER_API_KEY = os.getenv('OPENWEATHER_API_KEY', 'YOUR_OPENWEATHER_KEY')
-CITY = 'London'
-TEMP_THRESHOLD_C = 30  # Celsius
+PERSONA = config.get("persona", "You are a kind and helpful assistant.")
+GREETING = config.get("greeting", "Hello!")
+LANGUAGE = config.get("language", "en")
 
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+# Set your OpenAI API key in an environment variable for security
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-def get_weather(city):
-    url = (
-        f'https://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_API_KEY}&units=metric'
-    )
-    response = requests.get(url)
-    data = response.json()
-    if response.status_code != 200:
-        print(f"Weather API error: {data}")
-        return None, None
-    temp = data['main']['temp']
-    desc = data['weather'][0]['description']
-    return temp, desc
-
-def send_whatsapp_message(body):
-    message = client.messages.create(
-        from_=TWILIO_WHATSAPP_NUMBER,
-        body=body,
-        to=RECIPIENT_NUMBER
-    )
-    print(f"Sent message: {message.body} (SID: {message.sid})")
-
-def agentic_check_and_remind():
-    temp, desc = get_weather(CITY)
-    if temp is None:
-        return
-    print(f"Current temperature in {CITY}: {temp}°C ({desc})")
-    if temp >= TEMP_THRESHOLD_C:
-        send_whatsapp_message(
-            f"It's {temp}°C and {desc} in {CITY}. Stay hydrated! 💧"
+def generate_response(user_message, persona=PERSONA, backend="openai"):
+    """
+    Generates a chat response using an LLM backend.
+    Swap 'backend' param to change providers (e.g., 'groq', 'huggingface').
+    """
+    if backend == "openai":
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": persona},
+                {"role": "user", "content": user_message}
+            ]
         )
+        return response["choices"][0]["message"]["content"]
+    # Extend here for other backends
     else:
-        print("No need to send a hydration reminder.")
+        return "Sorry, no chat backend configured."
 
-# Schedule: every hour
-schedule.every(1).hours.do(agentic_check_and_remind)
+# Flask app for WhatsApp webhook
+app = Flask(__name__)
 
-if __name__ == "__main__":
-    print("Agent started. Checking weather and sending WhatsApp reminders if needed...")
-    agentic_check_and_remind()  # Run once at start
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
+    user_message = data.get("message", "")
+    if not user_message:
+        return {"reply": "No message received."}
+
+    # Initial greeting (optional)
+    if user_message.lower() in ["hi", "hello", "hey"]:
+        return {"reply": GREETING}
+    
+    # Generate response using persona and chat backend
+    reply = generate_response(user_message)
+    return {"reply": reply}
+
+if __name__ == '__main__':
+    app.run(port=5000)
